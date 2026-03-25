@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "NonPlanar Robotic Spatial AM": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Rhino 8\\System\\Rhino.exe",
+      "commandLineArgs": ""
+    }
+  }
+}

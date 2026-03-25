@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0-windows;net48</TargetFrameworks>
+    <Version>1.0</Version>
+    <Title>NonPlanar Robotic Spatial AM</Title>
+    <Description>Description of NonPlanar Robotic Spatial AM</Description>
+    <TargetExt>.gha</TargetExt>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <DefineConstants>$(DefineConstants);SMT_AVAILABLE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grasshopper" Version="8.28.26041.11001" IncludeAssets="compile;build" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows' and Exists('libs\\SMT')">
+    <SmtAssembly Include="libs\\SMT\\*.dll" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows' and Exists('libs\\SMT')">
+    <Reference Include="@(SmtAssembly->'%(Filename)')">
+      <HintPath>%(SmtAssembly.Identity)</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <Reference Include="SMT">
+      <HintPath>..\..\..\Documents\SMT\Rhino 8\SMT.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
