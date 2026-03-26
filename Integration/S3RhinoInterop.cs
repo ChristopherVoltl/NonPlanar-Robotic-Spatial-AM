@@ -9,8 +9,24 @@ using SpatialAdditiveManufacturing.Core.Slicing;
 
 namespace NonPlanar_Robotic_Spatial_AM
 {
+    /// <summary>
+    /// Bundles the Rhino geometry and diagnostics produced by the S3-inspired slicer.
+    /// </summary>
+    /// <remarks>
+    /// This wrapper exists because the Grasshopper component needs both the slice curves and the field diagnostics that explain them.
+    /// The class is immutable after construction.
+    /// </remarks>
     internal sealed class RhinoS3SliceResult
     {
+        /// <summary>
+        /// Initializes a Rhino-side S3 slice result.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: arguments should not be <see langword="null"/> and should all correspond to the same solve.
+        /// Postconditions: references are stored exactly as supplied.
+        /// Exceptions: none in this constructor.
+        /// Side-effects: none.
+        /// </remarks>
         public RhinoS3SliceResult(
             IReadOnlyList<Curve> curves,
             IReadOnlyList<Plane> planes,
@@ -35,8 +51,32 @@ namespace NonPlanar_Robotic_Spatial_AM
         public string FieldHistogram { get; }
     }
 
+    /// <summary>
+    /// Rhino-side adapter that converts a Brep into an S3-inspired field solve and extracted iso-curves.
+    /// </summary>
+    /// <remarks>
+    /// This layer exists because the S3 core engine operates on sampled nodes and scalar fields rather than Rhino Breps directly.
+    /// It performs meshing, node sampling, field visualization, planar base-layer seeding, and iso-curve extraction.
+    /// </remarks>
     internal static class RhinoS3SlicerInterop
     {
+        /// <summary>
+        /// Slices a Brep using the S3-inspired field workflow and returns curves plus field diagnostics.
+        /// </summary>
+        /// <param name="brep">The source Brep. It should be valid and expressed in the active Rhino model units.</param>
+        /// <param name="options">The S3 solve parameters. The value should not be <see langword="null"/>.</param>
+        /// <param name="tolerance">The geometric tolerance used for meshing, intersection, joining, and projection operations. It should be greater than zero.</param>
+        /// <returns>
+        /// A <see cref="RhinoS3SliceResult"/> containing slice curves, planes, a diagnostic mesh, vector glyphs, and summary text.
+        /// If the Brep cannot be meshed, the result contains no curves and an explanatory message.
+        /// </returns>
+        /// <remarks>
+        /// Preconditions: callers should supply a valid Brep and positive tolerance. For meaningful output, the layer height must also be positive.
+        /// Postconditions: the first layer is seeded from a planar XY intersection and higher layers are extracted from the S3-inspired scalar field.
+        /// Exceptions: unexpected RhinoCommon failures may still bubble up from meshing, intersection, or curve operations.
+        /// Differences: unlike <see cref="RhinoBrepLayerSlicer.Slice"/>, this workflow first solves an intermediate print-direction field and then extracts layers from that field.
+        /// Side-effects: allocates Rhino meshes, curves, lines, and planes for the current solve only; does not modify document geometry.
+        /// </remarks>
         public static RhinoS3SliceResult Slice(Brep brep, S3SliceGenerationOptions options, double tolerance)
         {
             var curves = new List<Curve>();

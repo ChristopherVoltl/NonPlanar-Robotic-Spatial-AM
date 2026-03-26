@@ -13,6 +13,31 @@ namespace SpatialAdditiveManufacturing.Core.Slicing;
 /// </summary>
 public sealed class S3SlicerEngine
 {
+    /// <summary>
+    /// Generates an S3-style print-direction field and scalar slicing field from a node graph.
+    /// </summary>
+    /// <param name="nodes">
+    /// The graph nodes sampled from the source surface or volume. The value cannot be <see langword="null"/>.
+    /// Each node should expose a valid position, neighborhood, and domain directions in a consistent coordinate frame.
+    /// </param>
+    /// <param name="options">
+    /// The S3-style solve parameters. The value cannot be <see langword="null"/>. Layer height should be positive and
+    /// weight values should be chosen relative to one another, even though the method clamps several derived values internally.
+    /// </param>
+    /// <returns>
+    /// A field result containing the final print directions, scalar values, deformation magnitudes, and angle diagnostics.
+    /// If <paramref name="nodes"/> is empty, an empty result is returned.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="nodes"/> or <paramref name="options"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// This method exists because the S3 workflow separates field optimization from curve extraction.
+    /// Postconditions: returned direction angles are in degrees relative to <see cref="S3SliceGenerationOptions.GlobalUpAxis"/>.
+    /// Differences: unlike <see cref="SpatialSlicerEngine.Generate"/>, this method does not emit slice curves directly; it emits
+    /// an intermediate field that Rhino-side code later converts into iso-curves.
+    /// Side-effects: allocates intermediate arrays only; does not modify global state or mutate the caller's node collection.
+    /// </remarks>
     public S3SliceFieldResult Generate(IReadOnlyList<S3NodeSample> nodes, S3SliceGenerationOptions options)
     {
         if (nodes is null)

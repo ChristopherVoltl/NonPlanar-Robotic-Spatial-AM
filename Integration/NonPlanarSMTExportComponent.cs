@@ -9,8 +9,21 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// Grasshopper component responsible only for:
     /// sliced curves -> SMT export.
     /// </summary>
+    /// <remarks>
+    /// This component exists so slicing and machine export can be tested independently. Unlike the slice components,
+    /// this one does have side-effects because it can write point data into the SMT plugin and change SMT selection state.
+    /// </remarks>
     public class NonPlanarSMTExportComponent : GH_Component
     {
+        /// <summary>
+        /// Initializes the Grasshopper component metadata used for registration and UI display.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: none.
+        /// Postconditions: the component is registered in the FGAM/SpatialPrinting tab when the assembly loads.
+        /// Exceptions: none.
+        /// Side-effects: none beyond standard Grasshopper component registration.
+        /// </remarks>
         public NonPlanarSMTExportComponent()
             : base("SMT Export", "SMT X", "Translate sliced curves into SMT point data.", "FGAM", "SpatialPrinting")
         {
@@ -32,6 +45,17 @@ namespace NonPlanar_Robotic_Spatial_AM
             pManager.AddTextParameter("Log", "L", "Status message from the SMT writer.", GH_ParamAccess.item);
         }
 
+        /// <summary>
+        /// Reads the curve inputs and, when requested, forwards them to the SMT writer.
+        /// </summary>
+        /// <param name="DA">Grasshopper's data-access wrapper for retrieving inputs and assigning outputs.</param>
+        /// <remarks>
+        /// Preconditions: callers should supply ordered path curves and valid SMT settings. Export only runs when the Run input is true.
+        /// Postconditions: when export runs, the output planes and log reflect the SMT writer result.
+        /// Exceptions: unexpected Rhino or SMT API failures may still bubble up from <see cref="SMTConnectionWriter"/>.
+        /// Differences: unlike the slice components, this component does not generate geometry from a Brep.
+        /// Side-effects: may modify SMT plugin state and writes runtime outputs/messages in Grasshopper.
+        /// </remarks>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             var curves = new List<Curve>();

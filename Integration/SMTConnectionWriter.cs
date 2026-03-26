@@ -16,10 +16,32 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// Move the old WriteAllToSMT logic here so both planar and nonplanar pipelines can call the same exporter.
     /// Drop the SMT assemblies into libs\SMT\ to enable this path automatically.
     /// </summary>
+    /// <remarks>
+    /// This service exists to isolate the SMT dependency and the operation-writing side-effects from the slicers themselves.
+    /// Unlike the core engines, these methods do modify Rhino and SMT UI state.
+    /// </remarks>
     public static class SMTConnectionWriter
     {
         static SuperMatterToolsPlugin smtPlugin => SuperMatterToolsPlugin.Instance;
 
+        /// <summary>
+        /// Translates path curves into SMT point data and writes them into the selected SMT operation.
+        /// </summary>
+        /// <param name="allPathCurves">The ordered path curves to export. The value may be empty but should not be <see langword="null"/>.</param>
+        /// <param name="verticalE5">The E5 value used for segments classified as vertical.</param>
+        /// <param name="angledE5">The E5 value used for segments classified as angled.</param>
+        /// <param name="horizontalE5">The E5 value used for segments classified as horizontal.</param>
+        /// <param name="velocityRatioMultiplier">A positive multiplier used when mapping SMT velocity ratios.</param>
+        /// <returns>
+        /// An <see cref="SMTWriteResult"/> describing the generated planes and a log message. A failed setup returns a result
+        /// with an explanatory message instead of throwing for ordinary operational issues.
+        /// </returns>
+        /// <remarks>
+        /// Preconditions: SMT must be installed and a valid Rhino document should be active.
+        /// Postconditions: when successful, the selected SMT operation contains newly written point data.
+        /// Exceptions: unexpected SMT or Rhino API failures may still bubble up from underlying dependencies.
+        /// Side-effects: modifies SMT UI state, creates user data, and selects the written operation or shape in the SMT UI.
+        /// </remarks>
         public static SMTWriteResult WriteAllToSMT(
             IReadOnlyList<Curve> allPathCurves,
             double verticalE5,
@@ -225,6 +247,17 @@ namespace NonPlanar_Robotic_Spatial_AM
             return new Polyline(points);
         }
 
+        /// <summary>
+        /// Ensures the minimal SMT workcell, program, and operation structure exists for writing point data.
+        /// </summary>
+        /// <param name="doc">The active Rhino document. It should not be <see langword="null"/>.</param>
+        /// <returns>A Rhino <see cref="Result"/> indicating success, cancellation, or failure.</returns>
+        /// <remarks>
+        /// Preconditions: callers should supply the active Rhino document, and the document may need to be saved first.
+        /// Postconditions: on success, the SMT UI is initialized and the default program and operation are selected.
+        /// Exceptions: unexpected Rhino or SMT API failures may still bubble up.
+        /// Side-effects: may save or prompt-save the Rhino file, starts the SMT UI, creates workcell data, and changes UI selection.
+        /// </remarks>
         public static Result SMTSetup(RhinoDoc doc)
         {
             if (doc == null)
@@ -302,6 +335,12 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// </summary>
     public static class SMTConnectionWriter
     {
+        /// <summary>
+        /// Returns a stub result explaining that SMT export is unavailable in the current build.
+        /// </summary>
+        /// <remarks>
+        /// Differences: unlike the SMT-enabled implementation, this method never attempts to talk to Rhino or SMT and has no side-effects.
+        /// </remarks>
         public static SMTWriteResult WriteAllToSMT(
             IReadOnlyList<Curve> allPathCurves,
             double verticalE5,
@@ -314,8 +353,20 @@ namespace NonPlanar_Robotic_Spatial_AM
     }
 #endif
 
+    /// <summary>
+    /// Describes the outcome of an SMT export attempt.
+    /// </summary>
     public sealed class SMTWriteResult
     {
+        /// <summary>
+        /// Initializes a new SMT write result.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: arguments should not be <see langword="null"/>.
+        /// Postconditions: values are stored exactly as supplied.
+        /// Exceptions: none in this constructor.
+        /// Side-effects: none.
+        /// </remarks>
         public SMTWriteResult(IReadOnlyList<Plane> generatedPlanes, string logMessage)
         {
             GeneratedPlanes = generatedPlanes;

@@ -14,8 +14,22 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// critical-feature detection, geometry-conforming scalar field construction,
     /// saddle bias, and adaptive slice extraction.
     /// </summary>
+    /// <remarks>
+    /// This component exists as the UI-facing entry point for the topology-driven slicer. It intentionally does not
+    /// perform SMT export; that responsibility lives in a separate component so users can inspect and validate geometry first.
+    /// Side-effects are limited to Grasshopper runtime messages and output assignment.
+    /// </remarks>
     public class NonPlanarSliceComponent : GH_Component
     {
+        /// <summary>
+        /// Initializes the Grasshopper component metadata used for registration and UI display.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: none.
+        /// Postconditions: the component is registered in the FGAM/SpatialPrinting tab when the assembly loads.
+        /// Exceptions: none.
+        /// Side-effects: none beyond standard Grasshopper component registration.
+        /// </remarks>
         public NonPlanarSliceComponent()
             : base("NonPlanar Slice", "NP Slice", "Slice a Brep into topology-driven nonplanar curves.", "FGAM", "SpatialPrinting")
         {
@@ -47,6 +61,18 @@ namespace NonPlanar_Robotic_Spatial_AM
             pManager.AddTextParameter("Angle Histogram", "H", "Histogram of vector-field angles over the Brep surface.", GH_ParamAccess.item);
         }
 
+        /// <summary>
+        /// Reads the Grasshopper inputs, runs the Rhino-side topology-driven slicer, and writes the resulting geometry and diagnostics.
+        /// </summary>
+        /// <param name="DA">Grasshopper's data-access wrapper for retrieving inputs and assigning outputs.</param>
+        /// <remarks>
+        /// Preconditions: callers must supply a valid Brep and numeric values that make sense for the current model units.
+        /// Point-count and minimum-distance resampling only take effect when the matching sampling mode is selected.
+        /// Postconditions: outputs are populated with slice curves, representative planes, and diagnostics when slicing succeeds.
+        /// Exceptions: unexpected Rhino or slicing-engine failures may still bubble up from the underlying interop layer.
+        /// Differences: unlike <see cref="NonPlanarSMTExportComponent"/>, this component never writes to SMT or other global plugin state.
+        /// Side-effects: emits Grasshopper runtime warnings or errors and allocates Rhino output geometry.
+        /// </remarks>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Brep? brep = null;

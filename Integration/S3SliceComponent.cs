@@ -12,8 +12,21 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// This is an approximation built around an inner orientation-field loop
     /// and an outer deformation/scalar-field loop.
     /// </summary>
+    /// <remarks>
+    /// This component exists to expose the S3-inspired solver separately from the topology-driven slicer so both workflows
+    /// can coexist in the same plugin. It is intentionally field-focused and does not talk to SMT directly.
+    /// </remarks>
     public class S3SliceComponent : GH_Component
     {
+        /// <summary>
+        /// Initializes the Grasshopper component metadata used for registration and UI display.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: none.
+        /// Postconditions: the component is registered in the FGAM/SpatialPrinting tab when the assembly loads.
+        /// Exceptions: none.
+        /// Side-effects: none beyond standard Grasshopper component registration.
+        /// </remarks>
         public S3SliceComponent()
             : base("S3 Slice", "S3 Slice", "Approximate S3-style curved slicing with quaternion-like field optimization and deformation-driven scalar extraction.", "FGAM", "SpatialPrinting")
         {
@@ -47,6 +60,19 @@ namespace NonPlanar_Robotic_Spatial_AM
             pManager.AddTextParameter("Field Histogram", "H", "Histogram of field angles on the Brep surface.", GH_ParamAccess.item);
         }
 
+        /// <summary>
+        /// Reads the Grasshopper inputs, solves the S3-inspired field, extracts iso-curves, and publishes diagnostics.
+        /// </summary>
+        /// <param name="DA">Grasshopper's data-access wrapper for retrieving inputs and assigning outputs.</param>
+        /// <remarks>
+        /// Preconditions: callers must provide a valid Brep and should use positive layer heights and sensible iteration counts.
+        /// The weight inputs are relative objective weights rather than normalized percentages.
+        /// Postconditions: outputs include slice curves, representative planes, a field map, vector glyphs, and analysis text.
+        /// Exceptions: unexpected Rhino or solver failures may still bubble up from the interop or core engine layers.
+        /// Differences: unlike <see cref="NonPlanarSliceComponent"/>, this component solves an intermediate print-direction field first
+        /// and then extracts curves from that field.
+        /// Side-effects: emits Grasshopper runtime warnings or errors and allocates Rhino output geometry.
+        /// </remarks>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Brep? brep = null;

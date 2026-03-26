@@ -7,8 +7,24 @@ using SpatialAdditiveManufacturing.Core.Slicing;
 
 namespace NonPlanar_Robotic_Spatial_AM
 {
+    /// <summary>
+    /// Bundles the Rhino geometry and diagnostics produced by the topology-driven Brep slicer.
+    /// </summary>
+    /// <remarks>
+    /// This wrapper exists because the Grasshopper component needs more than just curves: it also needs representative planes,
+    /// an analysis string, and field-visualization outputs. The class is immutable after construction.
+    /// </remarks>
     internal sealed class RhinoLayerSliceResult
     {
+        /// <summary>
+        /// Initializes a Rhino-side slice result.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: arguments should not be <see langword="null"/> and should all correspond to the same slicing run.
+        /// Postconditions: references are stored exactly as supplied.
+        /// Exceptions: none in this constructor.
+        /// Side-effects: none.
+        /// </remarks>
         public RhinoLayerSliceResult(
             IReadOnlyList<Curve> curves,
             IReadOnlyList<Plane> planes,
@@ -38,8 +54,31 @@ namespace NonPlanar_Robotic_Spatial_AM
     /// At Angle Influence = 0 the field reduces to global Z height, producing planar XY layers.
     /// Increasing Angle Influence blends the scalar field toward the selected Brep surface direction and curvature.
     /// </summary>
+    /// <remarks>
+    /// This interop layer exists because the core slicer works on simplified geometry types, while Grasshopper users provide Breps.
+    /// It handles Brep meshing, scalar-field construction, iso-curve extraction, and Rhino diagnostics. Unlike the core engine,
+    /// it allocates Rhino geometry and depends on RhinoCommon.
+    /// </remarks>
     internal static class RhinoBrepLayerSlicer
     {
+        /// <summary>
+        /// Slices a Brep into topology-aware nonplanar layer curves and diagnostic outputs.
+        /// </summary>
+        /// <param name="brep">The source Brep. It should be valid and expressed in the active Rhino model units.</param>
+        /// <param name="options">The slicer options. The value should not be <see langword="null"/>.</param>
+        /// <param name="tolerance">The geometric tolerance used for meshing, joining, and projection operations. It should be greater than zero.</param>
+        /// <returns>
+        /// A <see cref="RhinoLayerSliceResult"/> containing slice curves, representative planes, and visualization aids.
+        /// If the Brep cannot be meshed or the field does not span a layer interval, the result contains explanatory diagnostics and may contain no curves.
+        /// </returns>
+        /// <remarks>
+        /// Preconditions: callers should supply a valid Brep and positive tolerance. Several options are clamped internally, but physically meaningful
+        /// layer heights and tolerances still matter.
+        /// Postconditions: the returned curves are already smoothed or resampled according to the options.
+        /// Exceptions: unexpected RhinoCommon failures may still bubble up from meshing, intersection, or projection calls.
+        /// Differences: unlike <see cref="RhinoS3SlicerInterop.Slice"/>, this workflow derives layers from a topology-driven scalar field rather than the S3-inspired field solve.
+        /// Side-effects: allocates Rhino meshes, curves, lines, and planes for the current solve only; does not modify document geometry.
+        /// </remarks>
         public static RhinoLayerSliceResult Slice(Brep brep, SliceGenerationOptions options, double tolerance)
         {
             var curves = new List<Curve>();
@@ -1607,6 +1646,21 @@ namespace NonPlanar_Robotic_Spatial_AM
 
     internal static class RhinoSliceAnalysis
     {
+        /// <summary>
+        /// Formats human-readable analysis text for a Rhino slicing result.
+        /// </summary>
+        /// <param name="curves">The generated slice curves.</param>
+        /// <param name="planes">The representative slice planes aligned with those curves.</param>
+        /// <param name="layerHeight">The nominal layer height used by the solve.</param>
+        /// <param name="scalarValues">The scalar-field samples used to derive the slices.</param>
+        /// <returns>A multi-line summary string suitable for Grasshopper panels or debugging.</returns>
+        /// <remarks>
+        /// This method exists so analysis formatting stays consistent between components and avoids duplicating statistics code in UI classes.
+        /// Preconditions: callers should pass curves and planes from the same solve when possible.
+        /// Postconditions: the returned text always contains a summary, even when the input collections are empty.
+        /// Exceptions: none expected for ordinary empty inputs.
+        /// Side-effects: allocates only the returned string and intermediate statistics lists.
+        /// </remarks>
         public static string Format(IReadOnlyList<Curve> curves, IReadOnlyList<Plane> planes, double layerHeight, IReadOnlyList<double> scalarValues)
         {
             List<double> segmentLengths = ExtractSegmentLengths(curves);

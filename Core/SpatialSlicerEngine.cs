@@ -5,8 +5,40 @@ using SpatialAdditiveManufacturing.Core.Geometry;
 
 namespace SpatialAdditiveManufacturing.Core.Slicing;
 
+/// <summary>
+/// Converts topology-derived guide sections into ordered nonplanar slice paths and analytics.
+/// </summary>
+/// <remarks>
+/// This engine exists for the topology-driven slicer workflow, where the input is already deconstructed into section guides
+/// rather than a raw Brep. It builds a neighborhood graph, estimates a scalar traversal field, derives slice frames, and
+/// returns machine-agnostic path segments. The engine does not modify global state or mutate the supplied input collection.
+/// </remarks>
 public sealed class SpatialSlicerEngine
 {
+    /// <summary>
+    /// Generates a complete slice result from topology sections.
+    /// </summary>
+    /// <param name="sections">
+    /// The section set to process. The value cannot be <see langword="null"/>. For meaningful output, each section should
+    /// contain an ordered guide path and a representative topology normal in a consistent coordinate system.
+    /// </param>
+    /// <param name="options">
+    /// The slicer options. The value cannot be <see langword="null"/>. Several option values are clamped internally, but
+    /// callers should still provide positive layer heights and sensible scalar-step ranges.
+    /// </param>
+    /// <returns>
+    /// A <see cref="SliceResult"/> containing zero or more generated slice paths plus analytics. If <paramref name="sections"/>
+    /// is empty, the method returns an empty result instead of throwing.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="sections"/> or <paramref name="options"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// Postconditions: the returned paths are ordered according to the engine's adaptive scalar traversal rather than the
+    /// original input order alone.
+    /// Differences: unlike the Rhino-side slicers, this method does not inspect Breps or meshes and does not depend on RhinoCommon.
+    /// Side-effects: allocates working graph/analytics data only; does not modify the caller's sections or any global state.
+    /// </remarks>
     public SliceResult Generate(IReadOnlyList<TopologySection> sections, SliceGenerationOptions options)
     {
         if (sections is null)
