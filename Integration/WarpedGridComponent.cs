@@ -31,7 +31,9 @@ namespace NonPlanar_Robotic_Spatial_AM
             pManager.AddCurveParameter("Direction Guide", "DG", "Optional guide curve used to bias the forward direction after the seam is fixed.", GH_ParamAccess.item);
             pManager[3].Optional = true;
             pManager.AddIntegerParameter("Grid Resolution", "R", "Number of quads per side of the base square grid.", GH_ParamAccess.item, 8);
-            pManager.AddNumberParameter("Adaptive Strength", "AS", "How strongly the grid crowds toward tighter boundary features. 0 keeps the base grid uniform.", GH_ParamAccess.item, 0.35);
+            pManager.AddNumberParameter("Adaptive Strength", "AS", "How strongly samples redistribute inside already-refined regions. 0 keeps spacing uniform after subdivision.", GH_ParamAccess.item, 0.35);
+            pManager.AddNumberParameter("Deviation Threshold", "DT", "Only regions whose boundary approximation error exceeds this threshold are subdivided.", GH_ParamAccess.item, 1.0);
+            pManager.AddIntegerParameter("Adaptive Levels", "AL", "How many recursive refinement passes can insert extra rows and columns.", GH_ParamAccess.item, 2);
             pManager.AddIntegerParameter("Adaptive Smooth", "SM", "How many smoothing passes are applied to the adaptive boundary weights.", GH_ParamAccess.item, 1);
             pManager.AddNumberParameter("Fallback Span", "FS", "Fallback segment length used only when an input layer is not already a usable polyline.", GH_ParamAccess.item, 10.0);
         }
@@ -55,6 +57,8 @@ namespace NonPlanar_Robotic_Spatial_AM
             Curve? directionGuide = null;
             int gridResolution = 8;
             double adaptiveStrength = 0.35;
+            double deviationThreshold = 1.0;
+            int adaptiveLevels = 2;
             int adaptiveSmooth = 1;
             double fallbackSpan = 10.0;
 
@@ -64,8 +68,10 @@ namespace NonPlanar_Robotic_Spatial_AM
             DA.GetData(3, ref directionGuide);
             if (!DA.GetData(4, ref gridResolution)) return;
             if (!DA.GetData(5, ref adaptiveStrength)) return;
-            if (!DA.GetData(6, ref adaptiveSmooth)) return;
-            if (!DA.GetData(7, ref fallbackSpan)) return;
+            if (!DA.GetData(6, ref deviationThreshold)) return;
+            if (!DA.GetData(7, ref adaptiveLevels)) return;
+            if (!DA.GetData(8, ref adaptiveSmooth)) return;
+            if (!DA.GetData(9, ref fallbackSpan)) return;
 
             if (layerCurves.Count == 0)
             {
@@ -89,6 +95,8 @@ namespace NonPlanar_Robotic_Spatial_AM
                     DirectionGuideCurve = directionGuide,
                     GridResolution = gridResolution,
                     AdaptiveStrength = adaptiveStrength,
+                    AdaptiveDeviationThreshold = deviationThreshold,
+                    AdaptiveLevels = adaptiveLevels,
                     AdaptiveSmoothingPasses = adaptiveSmooth,
                     FallbackSegmentLength = fallbackSpan
                 },

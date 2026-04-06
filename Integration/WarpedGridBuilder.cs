@@ -41,6 +41,23 @@ namespace NonPlanar_Robotic_Spatial_AM
         public int AdaptiveSmoothingPasses { get; set; } = 1;
 
         /// <summary>
+        /// Gets or sets how many recursive refinement passes can insert extra grid lines.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: should be zero or greater. A value of zero disables true subdivision and keeps only the base grid.
+        /// </remarks>
+        public int AdaptiveLevels { get; set; } = 2;
+
+        /// <summary>
+        /// Gets or sets the geometric deviation threshold that must be exceeded before an interval is subdivided.
+        /// </summary>
+        /// <remarks>
+        /// Preconditions: should be greater than zero. Intervals whose boundary approximation error stays below this
+        /// threshold keep their current resolution.
+        /// </remarks>
+        public double AdaptiveDeviationThreshold { get; set; } = 1.0;
+
+        /// <summary>
         /// Gets or sets an optional curve used to anchor the seam for every normalized perimeter.
         /// </summary>
         public Curve? StartGuideCurve { get; set; }
@@ -127,8 +144,10 @@ namespace NonPlanar_Robotic_Spatial_AM
             int gridResolution = Math.Max(1, options.GridResolution);
             double adaptiveStrength = Math.Max(0.0, Math.Min(1.0, options.AdaptiveStrength));
             int adaptiveSmoothingPasses = Math.Max(0, options.AdaptiveSmoothingPasses);
-            int boundaryOversampleFactor = adaptiveStrength > 1e-6 ? 4 : 1;
-            int boundaryDivisionCount = Math.Max(4, gridResolution * 4 * boundaryOversampleFactor);
+            int adaptiveLevels = Math.Max(0, options.AdaptiveLevels);
+            double adaptiveDeviationThreshold = Math.Max(safeTolerance, options.AdaptiveDeviationThreshold);
+            int boundaryDivisionCount = Math.Max(4, gridResolution * 4);
+            int denseBoundaryDivisionCount = Math.Max(boundaryDivisionCount * 4, 16);
 
             var layers = new List<LayerData>();
             for (int index = 0; index < layerCurves.Count; index++)
@@ -153,11 +172,31 @@ namespace NonPlanar_Robotic_Spatial_AM
                     "No valid closed layers were available for warped-grid generation.");
             }
 
-            NormalizeLayerStack(layers, boundaryDivisionCount, options.StartGuideCurve, options.DirectionGuideCurve, safeTolerance, notes);
+            NormalizeLayerStack(layers, boundaryDivisionCount, denseBoundaryDivisionCount, options.StartGuideCurve, options.DirectionGuideCurve, safeTolerance, notes);
 
             foreach (LayerData layer in layers)
             {
-                BuildLayerMesh(layer, gridResolution, adaptiveStrength, adaptiveSmoothingPasses, gridCurves);
+                IReadOnlyList<double> uParameters = BuildAdaptiveParameterSet(
+                    layer,
+                    denseBoundaryDivisionCount / 4,
+                    gridResolution,
+                    adaptiveStrength,
+                    adaptiveSmoothingPasses,
+                    adaptiveLevels,
+                    adaptiveDeviationThreshold,
+                    useHorizontalSides: true);
+
+                IReadOnlyList<double> vParameters = BuildAdaptiveParameterSet(
+                    layer,
+                    denseBoundaryDivisionCount / 4,
+                    gridResolution,
+                    adaptiveStrength,
+                    adaptiveSmoothingPasses,
+                    adaptiveLevels,
+                    adaptiveDeviationThreshold,
+                    useHorizontalSides: false);
+
+                BuildLayerMesh(layer, uParameters, vParameters, gridCurves);
                 layerMeshes.Add(layer.Mesh!);
                 foreach (Point3d point in layer.GridPoints!)
                 {
@@ -172,7 +211,9 @@ namespace NonPlanar_Robotic_Spatial_AM
                 TryAddPoint(strut.To, nodes, safeTolerance);
             }
 
-            string analysis = BuildAnalysis(layers, gridResolution, boundaryDivisionCount, adaptiveStrength, interLayerStruts.Count, cellCenters.Count, notes);
+            int maxUResolution = layers.Count == 0 ? 0 : layers.Max(layer => Math.Max(0, layer.UCount - 1));
+            int maxVResolution = layers.Count == 0 ? 0 : layers.Max(layer => Math.Max(0, layer.VCount - 1));
+            string analysis = BuildAnalysis(layers, gridResolution, maxUResolution, maxVResolution, boundaryDivisionCount, adaptiveStrength, adaptiveLevels, adaptiveDeviationThreshold, interLayerStruts.Count, cellCenters.Count, notes);
             return new WarpedGridResult(layerMeshes, gridCurves, interLayerStruts, nodes, cellCenters, boundaryDivisionCount, analysis);
         }
 
@@ -204,6 +245,7 @@ namespace NonPlanar_Robotic_Spatial_AM
         private static void NormalizeLayerStack(
             IReadOnlyList<LayerData> layers,
             int boundaryDivisionCount,
+            int denseBoundaryDivisionCount,
             Curve? startGuideCurve,
             Curve? directionGuideCurve,
             double tolerance,
@@ -212,7 +254,7 @@ namespace NonPlanar_Robotic_Spatial_AM
             foreach (LayerData layer in layers)
             {
                 double seamParameter = ResolveLayerSeamParameter(layer, startGuideCurve, tolerance);
-                layer.NormalizePerimeter(boundaryDivisionCount, seamParameter);
+                layer.NormalizePerimeter(boundaryDivisionCount, denseBoundaryDivisionCount, seamParameter);
             }
 
             if (layers.Count == 0)
@@ -249,57 +291,42 @@ namespace NonPlanar_Robotic_Spatial_AM
 
         private static void BuildLayerMesh(
             LayerData layer,
-            int gridResolution,
-            double adaptiveStrength,
-            int adaptiveSmoothingPasses,
+            IReadOnlyList<double> uParameters,
+            IReadOnlyList<double> vParameters,
             ICollection<Curve> gridCurves)
         {
-            int sideDenseCount = Math.Max(1, layer.PerimeterPoints.Count / 4);
-            List<Point3d> bottomDense = ExtractSidePoints(layer.PerimeterPoints, 0, sideDenseCount);
-            List<Point3d> rightDense = ExtractSidePoints(layer.PerimeterPoints, sideDenseCount, sideDenseCount);
-            List<Point3d> topDense = ExtractSidePoints(layer.PerimeterPoints, sideDenseCount * 2, sideDenseCount);
-            List<Point3d> leftDense = ExtractSidePoints(layer.PerimeterPoints, sideDenseCount * 3, sideDenseCount);
+            int uCount = Math.Max(2, uParameters.Count);
+            int vCount = Math.Max(2, vParameters.Count);
 
-            List<Point3d> bottom = BuildAdaptiveSide(bottomDense, gridResolution, adaptiveStrength, adaptiveSmoothingPasses);
-            List<Point3d> right = BuildAdaptiveSide(rightDense, gridResolution, adaptiveStrength, adaptiveSmoothingPasses);
-            List<Point3d> top = BuildAdaptiveSide(topDense, gridResolution, adaptiveStrength, adaptiveSmoothingPasses);
-            List<Point3d> left = BuildAdaptiveSide(leftDense, gridResolution, adaptiveStrength, adaptiveSmoothingPasses);
-            top.Reverse();
-            left.Reverse();
+            Point3d[,] grid = new Point3d[uCount, vCount];
 
-            Point3d[,] grid = new Point3d[gridResolution + 1, gridResolution + 1];
-            Point3d c00 = bottom[0];
-            Point3d c10 = bottom[gridResolution];
-            Point3d c01 = top[0];
-            Point3d c11 = top[gridResolution];
-
-            for (int vIndex = 0; vIndex <= gridResolution; vIndex++)
+            for (int vIndex = 0; vIndex < vCount; vIndex++)
             {
-                double v = (double)vIndex / gridResolution;
-                for (int uIndex = 0; uIndex <= gridResolution; uIndex++)
+                double v = vParameters[vIndex];
+                for (int uIndex = 0; uIndex < uCount; uIndex++)
                 {
-                    double u = (double)uIndex / gridResolution;
-                    grid[uIndex, vIndex] = EvaluateCoonsPatch(bottom[uIndex], top[uIndex], left[vIndex], right[vIndex], c00, c10, c01, c11, u, v);
+                    double u = uParameters[uIndex];
+                    grid[uIndex, vIndex] = EvaluateLayerPoint(layer, u, v);
                 }
             }
 
             var mesh = new Mesh();
-            for (int vIndex = 0; vIndex <= gridResolution; vIndex++)
+            for (int vIndex = 0; vIndex < vCount; vIndex++)
             {
-                for (int uIndex = 0; uIndex <= gridResolution; uIndex++)
+                for (int uIndex = 0; uIndex < uCount; uIndex++)
                 {
                     mesh.Vertices.Add(grid[uIndex, vIndex]);
                 }
             }
 
-            for (int vIndex = 0; vIndex < gridResolution; vIndex++)
+            for (int vIndex = 0; vIndex < vCount - 1; vIndex++)
             {
-                for (int uIndex = 0; uIndex < gridResolution; uIndex++)
+                for (int uIndex = 0; uIndex < uCount - 1; uIndex++)
                 {
-                    int a = GridIndex(uIndex, vIndex, gridResolution + 1);
-                    int b = GridIndex(uIndex + 1, vIndex, gridResolution + 1);
-                    int c = GridIndex(uIndex + 1, vIndex + 1, gridResolution + 1);
-                    int d = GridIndex(uIndex, vIndex + 1, gridResolution + 1);
+                    int a = GridIndex(uIndex, vIndex, uCount);
+                    int b = GridIndex(uIndex + 1, vIndex, uCount);
+                    int c = GridIndex(uIndex + 1, vIndex + 1, uCount);
+                    int d = GridIndex(uIndex, vIndex + 1, uCount);
                     mesh.Faces.AddFace(a, b, c, d);
                 }
             }
@@ -308,13 +335,16 @@ namespace NonPlanar_Robotic_Spatial_AM
             mesh.Compact();
 
             layer.Mesh = mesh;
-            layer.GridResolution = gridResolution;
-            layer.GridPoints = FlattenGrid(grid, gridResolution);
+            layer.UParameters = uParameters.ToArray();
+            layer.VParameters = vParameters.ToArray();
+            layer.UCount = uCount;
+            layer.VCount = vCount;
+            layer.GridPoints = FlattenGrid(grid, uCount, vCount);
 
-            for (int vIndex = 0; vIndex <= gridResolution; vIndex++)
+            for (int vIndex = 0; vIndex < vCount; vIndex++)
             {
-                var row = new List<Point3d>(gridResolution + 1);
-                for (int uIndex = 0; uIndex <= gridResolution; uIndex++)
+                var row = new List<Point3d>(uCount);
+                for (int uIndex = 0; uIndex < uCount; uIndex++)
                 {
                     row.Add(grid[uIndex, vIndex]);
                 }
@@ -322,10 +352,10 @@ namespace NonPlanar_Robotic_Spatial_AM
                 gridCurves.Add(CreateOpenPolylineCurve(row));
             }
 
-            for (int uIndex = 0; uIndex <= gridResolution; uIndex++)
+            for (int uIndex = 0; uIndex < uCount; uIndex++)
             {
-                var column = new List<Point3d>(gridResolution + 1);
-                for (int vIndex = 0; vIndex <= gridResolution; vIndex++)
+                var column = new List<Point3d>(vCount);
+                for (int vIndex = 0; vIndex < vCount; vIndex++)
                 {
                     column.Add(grid[uIndex, vIndex]);
                 }
@@ -351,36 +381,120 @@ namespace NonPlanar_Robotic_Spatial_AM
                     continue;
                 }
 
-                int pointCount = Math.Min(lower.GridPoints.Count, upper.GridPoints.Count);
-                int gridResolution = Math.Min(lower.GridResolution, upper.GridResolution);
-                int width = gridResolution + 1;
+                IReadOnlyList<double> mergedU = MergeParameterSets(lower.UParameters, upper.UParameters);
+                IReadOnlyList<double> mergedV = MergeParameterSets(lower.VParameters, upper.VParameters);
 
-                for (int index = 0; index < pointCount; index++)
+                foreach (double v in mergedV)
                 {
-                    TryAddEdge(lower.GridPoints[index], upper.GridPoints[index], interLayerStruts, edgeKeys, tolerance);
+                    foreach (double u in mergedU)
+                    {
+                        TryAddEdge(EvaluateLayerPoint(lower, u, v), EvaluateLayerPoint(upper, u, v), interLayerStruts, edgeKeys, tolerance);
+                    }
                 }
 
-                for (int vIndex = 0; vIndex < gridResolution; vIndex++)
+                for (int vIndex = 0; vIndex < mergedV.Count - 1; vIndex++)
                 {
-                    for (int uIndex = 0; uIndex < gridResolution; uIndex++)
+                    for (int uIndex = 0; uIndex < mergedU.Count - 1; uIndex++)
                     {
-                        int a = GridIndex(uIndex, vIndex, width);
-                        int b = GridIndex(uIndex + 1, vIndex, width);
-                        int c = GridIndex(uIndex + 1, vIndex + 1, width);
-                        int d = GridIndex(uIndex, vIndex + 1, width);
+                        double u0 = mergedU[uIndex];
+                        double u1 = mergedU[uIndex + 1];
+                        double v0 = mergedV[vIndex];
+                        double v1 = mergedV[vIndex + 1];
 
-                        Point3d p000 = lower.GridPoints[a];
-                        Point3d p100 = lower.GridPoints[b];
-                        Point3d p110 = lower.GridPoints[c];
-                        Point3d p010 = lower.GridPoints[d];
-                        Point3d p001 = upper.GridPoints[a];
-                        Point3d p101 = upper.GridPoints[b];
-                        Point3d p111 = upper.GridPoints[c];
-                        Point3d p011 = upper.GridPoints[d];
+                        Point3d p000 = EvaluateLayerPoint(lower, u0, v0);
+                        Point3d p100 = EvaluateLayerPoint(lower, u1, v0);
+                        Point3d p110 = EvaluateLayerPoint(lower, u1, v1);
+                        Point3d p010 = EvaluateLayerPoint(lower, u0, v1);
+                        Point3d p001 = EvaluateLayerPoint(upper, u0, v0);
+                        Point3d p101 = EvaluateLayerPoint(upper, u1, v0);
+                        Point3d p111 = EvaluateLayerPoint(upper, u1, v1);
+                        Point3d p011 = EvaluateLayerPoint(upper, u0, v1);
                         cellCenters.Add(AveragePoint(new[] { p000, p100, p110, p010, p001, p101, p111, p011 }));
                     }
                 }
             }
+        }
+
+        private static IReadOnlyList<double> BuildAdaptiveParameterSet(
+            LayerData layer,
+            int denseSideCount,
+            int gridResolution,
+            double adaptiveStrength,
+            int adaptiveSmoothingPasses,
+            int adaptiveLevels,
+            double adaptiveDeviationThreshold,
+            bool useHorizontalSides)
+        {
+            if ((adaptiveStrength <= 1e-6 && adaptiveLevels <= 0))
+            {
+                return Enumerable.Range(0, gridResolution + 1).Select(index => (double)index / gridResolution).ToArray();
+            }
+
+            List<Point3d> bottomDense = ExtractSidePoints(layer.DensePerimeterPoints, 0, denseSideCount);
+            List<Point3d> rightDense = ExtractSidePoints(layer.DensePerimeterPoints, denseSideCount, denseSideCount);
+            List<Point3d> topDense = ExtractSidePoints(layer.DensePerimeterPoints, denseSideCount * 2, denseSideCount);
+            List<Point3d> leftDense = ExtractSidePoints(layer.DensePerimeterPoints, denseSideCount * 3, denseSideCount);
+
+            var sideSamples = new List<List<Point3d>>();
+            if (useHorizontalSides)
+            {
+                topDense.Reverse();
+                sideSamples.Add(bottomDense);
+                sideSamples.Add(topDense);
+            }
+            else
+            {
+                leftDense.Reverse();
+                sideSamples.Add(rightDense);
+                sideSamples.Add(leftDense);
+            }
+
+            if (sideSamples.Count == 0)
+            {
+                return Enumerable.Range(0, gridResolution + 1).Select(index => (double)index / gridResolution).ToArray();
+            }
+
+            List<double> parameters = BuildAdaptiveSubdivisionParametersByDeviation(
+                sideSamples,
+                denseSideCount,
+                gridResolution,
+                adaptiveLevels,
+                adaptiveDeviationThreshold);
+
+            if (adaptiveStrength <= 1e-6)
+            {
+                return parameters.ToArray();
+            }
+
+            double[] aggregatedWeights = new double[denseSideCount + 1];
+            double[] aggregatedLengths = new double[denseSideCount];
+            for (int sideIndex = 0; sideIndex < sideSamples.Count; sideIndex++)
+            {
+                List<Point3d> side = sideSamples[sideIndex];
+                double[] weights = ComputeBoundaryVertexWeights(side, adaptiveStrength);
+                for (int index = 0; index < weights.Length; index++)
+                {
+                    aggregatedWeights[index] += weights[index];
+                }
+
+                for (int index = 0; index < denseSideCount; index++)
+                {
+                    aggregatedLengths[index] += side[index].DistanceTo(side[index + 1]);
+                }
+            }
+
+            for (int index = 0; index < aggregatedWeights.Length; index++)
+            {
+                aggregatedWeights[index] /= sideSamples.Count;
+            }
+
+            for (int index = 0; index < aggregatedLengths.Length; index++)
+            {
+                aggregatedLengths[index] /= sideSamples.Count;
+            }
+
+            SmoothWeights(aggregatedWeights, adaptiveSmoothingPasses);
+            return RemapParametersByWeightedLength(parameters, aggregatedLengths, aggregatedWeights);
         }
 
         private static List<Point3d> ExtractSidePoints(IReadOnlyList<Point3d> perimeterPoints, int startIndex, int segmentCount)
@@ -395,20 +509,49 @@ namespace NonPlanar_Robotic_Spatial_AM
             return points;
         }
 
-        private static List<Point3d> BuildAdaptiveSide(
-            IReadOnlyList<Point3d> denseSidePoints,
-            int gridResolution,
-            double adaptiveStrength,
-            int adaptiveSmoothingPasses)
+        private static List<Point3d> SampleSideByParameters(IReadOnlyList<Point3d> denseSidePoints, IReadOnlyList<double> parameters)
         {
-            if (denseSidePoints.Count <= 2 || adaptiveStrength <= 1e-6)
+            if (denseSidePoints.Count == 0)
             {
-                return ResampleSideByLength(denseSidePoints, gridResolution);
+                return new List<Point3d>();
             }
 
-            double[] vertexWeights = ComputeBoundaryVertexWeights(denseSidePoints, adaptiveStrength);
-            SmoothWeights(vertexWeights, adaptiveSmoothingPasses);
-            return ResampleSideByWeightedLength(denseSidePoints, vertexWeights, gridResolution);
+            if (denseSidePoints.Count == 1)
+            {
+                return parameters.Select(_ => denseSidePoints[0]).ToList();
+            }
+
+            var cumulative = new double[denseSidePoints.Count];
+            double total = 0.0;
+            cumulative[0] = 0.0;
+            for (int index = 1; index < denseSidePoints.Count; index++)
+            {
+                total += denseSidePoints[index - 1].DistanceTo(denseSidePoints[index]);
+                cumulative[index] = total;
+            }
+
+            if (total <= 1e-9)
+            {
+                return new List<Point3d>(denseSidePoints);
+            }
+
+            var samples = new List<Point3d>(parameters.Count);
+            foreach (double parameter in parameters)
+            {
+                double target = Math.Max(0.0, Math.Min(1.0, parameter)) * total;
+                int segmentIndex = 0;
+                while (segmentIndex < cumulative.Length - 2 && cumulative[segmentIndex + 1] < target)
+                {
+                    segmentIndex++;
+                }
+
+                double start = cumulative[segmentIndex];
+                double end = cumulative[segmentIndex + 1];
+                double local = end - start <= 1e-9 ? 0.0 : (target - start) / (end - start);
+                samples.Add(denseSidePoints[segmentIndex] + ((denseSidePoints[segmentIndex + 1] - denseSidePoints[segmentIndex]) * local));
+            }
+
+            return samples;
         }
 
         private static double[] ComputeBoundaryVertexWeights(IReadOnlyList<Point3d> points, double adaptiveStrength)
@@ -456,35 +599,199 @@ namespace NonPlanar_Robotic_Spatial_AM
             }
         }
 
-        private static List<Point3d> ResampleSideByLength(IReadOnlyList<Point3d> points, int gridResolution)
+        private static double[] BuildNormalizedFeatureSignal(IReadOnlyList<double> weights)
         {
-            var unitWeights = Enumerable.Repeat(1.0, points.Count).ToArray();
-            return ResampleSideByWeightedLength(points, unitWeights, gridResolution);
+            var signal = new double[weights.Count];
+            double maxValue = 0.0;
+            for (int index = 0; index < weights.Count; index++)
+            {
+                signal[index] = Math.Max(0.0, weights[index] - 1.0);
+                maxValue = Math.Max(maxValue, signal[index]);
+            }
+
+            if (maxValue <= 1e-9)
+            {
+                return signal;
+            }
+
+            for (int index = 0; index < signal.Length; index++)
+            {
+                signal[index] /= maxValue;
+            }
+
+            return signal;
         }
 
-        private static List<Point3d> ResampleSideByWeightedLength(
-            IReadOnlyList<Point3d> points,
-            IReadOnlyList<double> vertexWeights,
-            int gridResolution)
+        private static List<double> BuildAdaptiveSubdivisionParametersByDeviation(
+            IReadOnlyList<List<Point3d>> sideSamples,
+            int denseSideCount,
+            int gridResolution,
+            int adaptiveLevels,
+            double adaptiveDeviationThreshold)
         {
-            var cumulative = new double[points.Count];
+            var parameters = Enumerable.Range(0, gridResolution + 1)
+                .Select(index => (double)index / gridResolution)
+                .ToList();
+
+            if (adaptiveLevels <= 0 || sideSamples.Count == 0)
+            {
+                return parameters;
+            }
+
+            double minimumSpan = 1.0 / Math.Pow(2.0, adaptiveLevels + 2);
+
+            for (int level = 0; level < adaptiveLevels; level++)
+            {
+                var refined = new List<double> { parameters[0] };
+                for (int index = 0; index < parameters.Count - 1; index++)
+                {
+                    double start = parameters[index];
+                    double end = parameters[index + 1];
+                    double intervalDeviation = EvaluateIntervalDeviation(sideSamples, denseSideCount, start, end);
+                    if (intervalDeviation > adaptiveDeviationThreshold && (end - start) > minimumSpan)
+                    {
+                        refined.Add(0.5 * (start + end));
+                    }
+
+                    refined.Add(end);
+                }
+
+                parameters = refined
+                    .Distinct()
+                    .OrderBy(value => value)
+                    .ToList();
+            }
+
+            return parameters;
+        }
+
+        private static double EvaluateIntervalDeviation(
+            IReadOnlyList<List<Point3d>> sideSamples,
+            int denseSideCount,
+            double start,
+            double end)
+        {
+            double maxDeviation = 0.0;
+            foreach (List<Point3d> side in sideSamples)
+            {
+                if (side.Count < 2)
+                {
+                    continue;
+                }
+
+                Point3d startPoint = EvaluateDenseSideAt(side, start);
+                Point3d endPoint = EvaluateDenseSideAt(side, end);
+                if (startPoint.DistanceTo(endPoint) <= 1e-9)
+                {
+                    continue;
+                }
+
+                var chord = new Line(startPoint, endPoint);
+                int startIndex = Math.Max(0, Math.Min(denseSideCount, (int)Math.Floor(start * denseSideCount)));
+                int endIndex = Math.Max(0, Math.Min(denseSideCount, (int)Math.Ceiling(end * denseSideCount)));
+                for (int index = startIndex; index <= endIndex; index++)
+                {
+                    Point3d samplePoint = side[index];
+                    maxDeviation = Math.Max(maxDeviation, chord.DistanceTo(samplePoint, true));
+                }
+            }
+
+            return maxDeviation;
+        }
+
+        private static Point3d EvaluateDenseSideAt(IReadOnlyList<Point3d> side, double parameter)
+        {
+            if (side.Count == 0)
+            {
+                return Point3d.Origin;
+            }
+
+            if (side.Count == 1)
+            {
+                return side[0];
+            }
+
+            double clamped = Math.Max(0.0, Math.Min(1.0, parameter));
+            double scaled = clamped * (side.Count - 1);
+            int startIndex = Math.Min(side.Count - 2, Math.Max(0, (int)Math.Floor(scaled)));
+            double local = scaled - startIndex;
+            return side[startIndex] + ((side[startIndex + 1] - side[startIndex]) * local);
+        }
+
+        private static IReadOnlyList<double> RemapParametersByWeightedLength(
+            IReadOnlyList<double> parameters,
+            IReadOnlyList<double> segmentLengths,
+            IReadOnlyList<double> vertexWeights)
+        {
+            if (parameters.Count == 0)
+            {
+                return Array.Empty<double>();
+            }
+
+            if (parameters.Count == 1)
+            {
+                return new[] { 0.0 };
+            }
+
+            var cumulative = new double[segmentLengths.Count + 1];
             double total = 0.0;
             cumulative[0] = 0.0;
 
-            for (int index = 1; index < points.Count; index++)
+            for (int index = 1; index < cumulative.Length; index++)
             {
-                double segmentLength = points[index - 1].DistanceTo(points[index]);
                 double segmentWeight = 0.5 * (vertexWeights[index - 1] + vertexWeights[index]);
-                total += segmentLength * Math.Max(1e-6, segmentWeight);
+                total += segmentLengths[index - 1] * Math.Max(1e-6, segmentWeight);
                 cumulative[index] = total;
             }
 
             if (total <= 1e-9)
             {
-                return new List<Point3d>(points);
+                return parameters.ToArray();
             }
 
-            var result = new List<Point3d>(gridResolution + 1);
+            var remapped = new double[parameters.Count];
+            for (int sampleIndex = 0; sampleIndex < parameters.Count; sampleIndex++)
+            {
+                double target = total * Math.Max(0.0, Math.Min(1.0, parameters[sampleIndex]));
+                int segmentIndex = 0;
+                while (segmentIndex < cumulative.Length - 2 && cumulative[segmentIndex + 1] < target)
+                {
+                    segmentIndex++;
+                }
+
+                double start = cumulative[segmentIndex];
+                double end = cumulative[segmentIndex + 1];
+                double local = end - start <= 1e-9 ? 0.0 : (target - start) / (end - start);
+                remapped[sampleIndex] = (segmentIndex + local) / Math.Max(1.0, segmentLengths.Count);
+            }
+
+            remapped[0] = 0.0;
+            remapped[remapped.Length - 1] = 1.0;
+            return remapped;
+        }
+
+        private static IReadOnlyList<double> BuildWeightedParameterSamples(
+            IReadOnlyList<double> segmentLengths,
+            IReadOnlyList<double> vertexWeights,
+            int gridResolution)
+        {
+            var cumulative = new double[segmentLengths.Count + 1];
+            double total = 0.0;
+            cumulative[0] = 0.0;
+
+            for (int index = 1; index < cumulative.Length; index++)
+            {
+                double segmentWeight = 0.5 * (vertexWeights[index - 1] + vertexWeights[index]);
+                total += segmentLengths[index - 1] * Math.Max(1e-6, segmentWeight);
+                cumulative[index] = total;
+            }
+
+            if (total <= 1e-9)
+            {
+                return Enumerable.Range(0, gridResolution + 1).Select(index => (double)index / gridResolution).ToArray();
+            }
+
+            var result = new double[gridResolution + 1];
             for (int sampleIndex = 0; sampleIndex <= gridResolution; sampleIndex++)
             {
                 double target = total * sampleIndex / gridResolution;
@@ -497,7 +804,7 @@ namespace NonPlanar_Robotic_Spatial_AM
                 double start = cumulative[segmentIndex];
                 double end = cumulative[segmentIndex + 1];
                 double local = end - start <= 1e-9 ? 0.0 : (target - start) / (end - start);
-                result.Add(points[segmentIndex] + ((points[segmentIndex + 1] - points[segmentIndex]) * local));
+                result[sampleIndex] = (segmentIndex + local) / Math.Max(1.0, segmentLengths.Count);
             }
 
             return result;
@@ -535,17 +842,38 @@ namespace NonPlanar_Robotic_Spatial_AM
             return Point3d.Origin + blend;
         }
 
+        private static Point3d EvaluateLayerPoint(LayerData layer, double u, double v)
+        {
+            int sideDenseCount = Math.Max(1, layer.DensePerimeterPoints.Count / 4);
+            List<Point3d> bottomDense = ExtractSidePoints(layer.DensePerimeterPoints, 0, sideDenseCount);
+            List<Point3d> rightDense = ExtractSidePoints(layer.DensePerimeterPoints, sideDenseCount, sideDenseCount);
+            List<Point3d> topDense = ExtractSidePoints(layer.DensePerimeterPoints, sideDenseCount * 2, sideDenseCount);
+            List<Point3d> leftDense = ExtractSidePoints(layer.DensePerimeterPoints, sideDenseCount * 3, sideDenseCount);
+
+            Point3d bottom = EvaluateDenseSideAt(bottomDense, u);
+            Point3d right = EvaluateDenseSideAt(rightDense, v);
+            Point3d top = EvaluateDenseSideAt(topDense, 1.0 - u);
+            Point3d left = EvaluateDenseSideAt(leftDense, 1.0 - v);
+
+            Point3d c00 = bottomDense[0];
+            Point3d c10 = bottomDense[bottomDense.Count - 1];
+            Point3d c01 = topDense[topDense.Count - 1];
+            Point3d c11 = topDense[0];
+
+            return EvaluateCoonsPatch(bottom, top, left, right, c00, c10, c01, c11, u, v);
+        }
+
         private static int GridIndex(int uIndex, int vIndex, int width)
         {
             return (vIndex * width) + uIndex;
         }
 
-        private static List<Point3d> FlattenGrid(Point3d[,] grid, int gridResolution)
+        private static List<Point3d> FlattenGrid(Point3d[,] grid, int uCount, int vCount)
         {
-            var points = new List<Point3d>((gridResolution + 1) * (gridResolution + 1));
-            for (int vIndex = 0; vIndex <= gridResolution; vIndex++)
+            var points = new List<Point3d>(uCount * vCount);
+            for (int vIndex = 0; vIndex < vCount; vIndex++)
             {
-                for (int uIndex = 0; uIndex <= gridResolution; uIndex++)
+                for (int uIndex = 0; uIndex < uCount; uIndex++)
                 {
                     points.Add(grid[uIndex, vIndex]);
                 }
@@ -556,9 +884,13 @@ namespace NonPlanar_Robotic_Spatial_AM
 
         private static string BuildAnalysis(
             IReadOnlyList<LayerData> layers,
-            int gridResolution,
+            int baseGridResolution,
+            int finalUCount,
+            int finalVCount,
             int boundaryDivisionCount,
             double adaptiveStrength,
+            int adaptiveLevels,
+            double adaptiveDeviationThreshold,
             int interLayerStrutCount,
             int cellCenterCount,
             IReadOnlyList<string> notes)
@@ -566,14 +898,17 @@ namespace NonPlanar_Robotic_Spatial_AM
             var lines = new List<string>
             {
                 "Layers: " + layers.Count,
-                "Grid resolution: " + gridResolution + " x " + gridResolution,
+                "Base grid resolution: " + baseGridResolution + " x " + baseGridResolution,
+                "Adaptive grid resolution: " + finalUCount + " x " + finalVCount,
                 "Boundary divisions per layer: " + boundaryDivisionCount,
                 "Adaptive strength: " + adaptiveStrength.ToString("0.###"),
+                "Adaptive levels: " + adaptiveLevels,
+                "Deviation threshold: " + adaptiveDeviationThreshold.ToString("0.###"),
                 "Layer meshes: " + layers.Count,
                 "Inter-layer struts: " + interLayerStrutCount,
                 "Cell centers: " + cellCenterCount,
                 "Base mapping: square parameter grid warped to each normalized nonplanar perimeter.",
-                "Adaptive refinement: boundary samples are redistributed toward tighter turns before the grid is warped."
+                "Adaptive refinement: extra rows and columns are inserted only where boundary approximation deviation exceeds the threshold."
             };
 
             if (notes.Count > 0)
@@ -582,6 +917,25 @@ namespace NonPlanar_Robotic_Spatial_AM
             }
 
             return string.Join(Environment.NewLine, lines);
+        }
+
+        private static IReadOnlyList<double> MergeParameterSets(IReadOnlyList<double> first, IReadOnlyList<double> second)
+        {
+            var merged = first
+                .Concat(second)
+                .Select(value => Math.Max(0.0, Math.Min(1.0, value)))
+                .Distinct(new ParameterComparer())
+                .OrderBy(value => value)
+                .ToList();
+
+            if (merged.Count == 0)
+            {
+                return new[] { 0.0, 1.0 };
+            }
+
+            merged[0] = 0.0;
+            merged[merged.Count - 1] = 1.0;
+            return merged;
         }
 
         private static List<Point3d> ExtractClosedLayerPoints(Curve curve, double fallbackSegmentLength, double tolerance)
@@ -882,24 +1236,34 @@ namespace NonPlanar_Robotic_Spatial_AM
             {
                 StackIndex = stackIndex;
                 Plane = plane;
-                PerimeterPoints = perimeterPoints;
+                SourcePerimeterPoints = new List<Point3d>(perimeterPoints);
+                PerimeterPoints = new List<Point3d>(perimeterPoints);
+                DensePerimeterPoints = new List<Point3d>(perimeterPoints);
             }
 
             public int StackIndex { get; }
             public Plane Plane { get; }
+            public List<Point3d> SourcePerimeterPoints { get; }
             public List<Point3d> PerimeterPoints { get; private set; }
+            public List<Point3d> DensePerimeterPoints { get; private set; }
             public Mesh? Mesh { get; set; }
             public List<Point3d>? GridPoints { get; set; }
-            public int GridResolution { get; set; }
+            public int UCount { get; set; }
+            public int VCount { get; set; }
+            public IReadOnlyList<double> UParameters { get; set; } = Array.Empty<double>();
+            public IReadOnlyList<double> VParameters { get; set; } = Array.Empty<double>();
 
-            public void NormalizePerimeter(int divisionCount, double seamParameter)
+            public void NormalizePerimeter(int divisionCount, int denseDivisionCount, double seamParameter)
             {
-                PerimeterPoints = new TopologicalRingSampler(PerimeterPoints).Sample(divisionCount, seamParameter);
+                var sampler = new TopologicalRingSampler(SourcePerimeterPoints);
+                PerimeterPoints = sampler.Sample(divisionCount, seamParameter);
+                DensePerimeterPoints = sampler.Sample(Math.Max(denseDivisionCount, divisionCount), seamParameter);
             }
 
             public void ReversePreservingStart()
             {
                 PerimeterPoints = CreateReversePreservingStartCopy(PerimeterPoints);
+                DensePerimeterPoints = CreateReversePreservingStartCopy(DensePerimeterPoints);
             }
 
             public Vector3d GetStartTraversalDirection()
@@ -1022,6 +1386,19 @@ namespace NonPlanar_Robotic_Spatial_AM
                 }
 
                 return parameters;
+            }
+        }
+
+        private sealed class ParameterComparer : IEqualityComparer<double>
+        {
+            public bool Equals(double x, double y)
+            {
+                return Math.Abs(x - y) <= 1e-6;
+            }
+
+            public int GetHashCode(double obj)
+            {
+                return Math.Round(obj * 1000000.0).GetHashCode();
             }
         }
     }
